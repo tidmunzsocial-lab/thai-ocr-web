@@ -47,6 +47,7 @@ _jobs: dict[str, dict] = {}
 _active_job_id: str | None = None
 _active_process: subprocess.Popen | None = None
 _cancel_event = threading.Event()
+_model_admin_busy = False
 
 
 def unload_fast_model() -> None:
@@ -61,6 +62,83 @@ def unload_fast_model() -> None:
         )
 
 
+def _set_model_admin_busy(busy: bool) -> None:
+    global _model_admin_busy
+    with _jobs_lock:
+        if busy:
+            has_jobs = any(job["status"] in {"รอคิว", "กำลังทำ", "กำลังหยุด"} for job in _jobs.values())
+            if has_jobs or _model_admin_busy:
+                raise gr.Error("มีงานกำลังทำหรือจัดการโมเดลอยู่ กรุณารอให้เสร็จก่อน")
+        _model_admin_busy = busy
+
+
+def _fast_model_info() -> dict | None:
+    if not OLLAMA_EXE.exists():
+        raise RuntimeError("ไม่พบ Ollama")
+    from typhoon_fast_worker import MODEL, ensure_server, request
+
+    ensure_server(OLLAMA_EXE)
+    models = request("/api/tags", timeout=10).get("models", [])
+    return next((model for model in models if model.get("name", "").split(":", 1)[0] == MODEL), None)
+
+
+def fast_model_status() -> str:
+    try:
+        model = _fast_model_info()
+    except Exception as error:
+        return f"⚠️ ตรวจสอบไม่ได้: {escape(str(error))}"
+    if not model:
+        return "🔴 ยังไม่ได้ติดตั้ง Typhoon Fast — กด **ติดตั้ง / อัปเดต** ก่อนใช้งาน"
+    size_gb = model.get("size", 0) / 1024**3
+    return f"🟢 Typhoon Fast ติดตั้งแล้ว • ใช้พื้นที่ {size_gb:.1f} GB"
+
+
+def install_fast_model(progress=gr.Progress()) -> str:
+    _set_model_admin_busy(True)
+    try:
+        if not OLLAMA_EXE.exists():
+            raise gr.Error("ไม่พบ Ollama กรุณารันตัวติดตั้ง Mac อีกครั้ง")
+        from typhoon_fast_worker import MODEL, ensure_server
+
+        ensure_server(OLLAMA_EXE)
+        progress(0, desc="กำลังดาวน์โหลด Typhoon Fast")
+        result = subprocess.run(
+            [str(OLLAMA_EXE), "pull", MODEL],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            check=False,
+        )
+        if result.returncode:
+            raise gr.Error("ติดตั้งโมเดลไม่สำเร็จ: " + (result.stderr or result.stdout)[-300:])
+        progress(1, desc="ติดตั้งเสร็จแล้ว")
+        return fast_model_status()
+    finally:
+        _set_model_admin_busy(False)
+
+
+def remove_fast_model() -> str:
+    _set_model_admin_busy(True)
+    try:
+        if not _fast_model_info():
+            return "🔴 ไม่มี Typhoon Fast อยู่ในเครื่อง"
+        from typhoon_fast_worker import MODEL
+
+        unload_fast_model()
+        result = subprocess.run(
+            [str(OLLAMA_EXE), "rm", MODEL],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode:
+            raise gr.Error("ลบโมเดลไม่สำเร็จ: " + (result.stderr or result.stdout)[-300:])
+        return "🔴 ลบ Typhoon Fast แล้ว • กดติดตั้งอีกครั้งได้ทุกเมื่อ"
+    finally:
+        _set_model_admin_busy(False)
+
+
 def _update_job(job_id: str, **changes) -> None:
     with _jobs_lock:
         if job_id in _jobs:
@@ -72,6 +150,8 @@ def register_job(file_path: str | None, engine: str, page_spec: str):
         raise gr.Error("กรุณาเลือกไฟล์รูปหรือ PDF ก่อน")
     job_id = uuid.uuid4().hex[:8]
     with _jobs_lock:
+        if _model_admin_busy:
+            raise gr.Error("กำลังติดตั้งหรือลบโมเดล กรุณารอให้เสร็จก่อน")
         _jobs[job_id] = {
             "id": job_id,
             "document": Path(file_path).name,
@@ -528,16 +608,7 @@ def run_ocr(job_id: str, *args):
 
 
 def build_app() -> gr.Blocks:
-    engines = (
-        ["Typhoon OCR Fast (AI/ไทย/เร็ว)"]
-        if sys.platform == "darwin"
-        else [
-            "PaddleOCR (GPU/เร็ว)",
-            "Typhoon OCR ปกติ (AI/ไทย)",
-            "Typhoon OCR Fast (AI/ไทย/เร็ว)",
-            "Unlimited-OCR (AI/ละเอียด)",
-        ]
-    )
+    is_mac = sys.platform == "darwin"
     with gr.Blocks(title="Unlimited OCR") as app:
         gr.Markdown(
             "# อ่านเอกสารจากรูปภาพหรือ PDF\n"
@@ -552,16 +623,26 @@ def build_app() -> gr.Blocks:
                     file_types=[".jpg", ".jpeg", ".png", ".pdf"],
                     label="1. เลือกรูปหรือ PDF",
                 )
-                mode = gr.Radio(
-                    ["เร็ว (แนะนำ)", "ละเอียดสูง"],
-                    value="เร็ว (แนะนำ)",
-                    label="คุณภาพ",
-                )
-                engine = gr.Dropdown(
-                    engines,
-                    value="Typhoon OCR Fast (AI/ไทย/เร็ว)",
-                    label="OCR ที่ต้องการใช้",
-                )
+                if is_mac:
+                    mode = gr.State("เร็ว (แนะนำ)")
+                    engine = gr.State("Typhoon OCR Fast (AI/ไทย/เร็ว)")
+                    gr.Markdown("**OCR:** Typhoon Fast (ประหยัดพื้นที่สำหรับ Mac)")
+                else:
+                    mode = gr.Radio(
+                        ["เร็ว (แนะนำ)", "ละเอียดสูง"],
+                        value="เร็ว (แนะนำ)",
+                        label="คุณภาพ",
+                    )
+                    engine = gr.Dropdown(
+                        [
+                            "PaddleOCR (GPU/เร็ว)",
+                            "Typhoon OCR ปกติ (AI/ไทย)",
+                            "Typhoon OCR Fast (AI/ไทย/เร็ว)",
+                            "Unlimited-OCR (AI/ละเอียด)",
+                        ],
+                        value="Typhoon OCR Fast (AI/ไทย/เร็ว)",
+                        label="OCR ที่ต้องการใช้",
+                    )
                 page_count = gr.State(1)
                 page_spec = gr.State("1")
                 batch_size = gr.Radio(
@@ -577,6 +658,13 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     run_button = gr.Button(queue_button_label(), variant="primary")
                     stop_button = gr.Button("หยุดงานปัจจุบัน", variant="stop")
+                if is_mac:
+                    with gr.Accordion("⚙️ ตั้งค่าโมเดลและพื้นที่", open=False):
+                        model_status = gr.Markdown("กดตรวจสอบเพื่อดูพื้นที่ที่โมเดลใช้อยู่")
+                        with gr.Row():
+                            check_model_button = gr.Button("ตรวจสอบ", size="sm")
+                            install_model_button = gr.Button("ติดตั้ง / อัปเดต Fast", size="sm")
+                            remove_model_button = gr.Button("ลบ Fast ออกจากเครื่อง", variant="stop", size="sm")
             with gr.Column():
                 status = gr.Markdown("พร้อมใช้งาน")
                 progress_display = gr.HTML(progress_bar(0, "พร้อมใช้งาน"))
@@ -589,6 +677,10 @@ def build_app() -> gr.Blocks:
         previous_button.click(lambda spec, total: move_selection(spec, total, -1), inputs=[page_spec, page_count], outputs=[page_spec, page_info])
         next_button.click(lambda spec, total: move_selection(spec, total, 1), inputs=[page_spec, page_count], outputs=[page_spec, page_info])
         all_button.click(select_all_pages, inputs=page_count, outputs=[page_spec, page_info])
+        if is_mac:
+            check_model_button.click(fast_model_status, outputs=model_status, queue=False, show_progress="hidden")
+            install_model_button.click(install_fast_model, outputs=model_status)
+            remove_model_button.click(remove_fast_model, outputs=model_status)
         jobs_timer.tick(queue_ui_state, outputs=[jobs_display, run_button], queue=False, show_progress="hidden")
         stop_button.click(stop_current_job, outputs=jobs_display, queue=False, show_progress="hidden")
         submit = run_button.click(

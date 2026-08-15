@@ -37,6 +37,9 @@ Requirements:
 
 The application is installed in `~/Thai-OCR-Web`. Double click
 `Thai OCR Web.command` on the Desktop to open it again later.
+Open **ตั้งค่าโมเดลและพื้นที่** in the web app to check the Fast model size,
+update it, or remove it from disk. A removed model can be downloaded again at
+any time.
 
 ## OCR engines
 
