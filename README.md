@@ -24,32 +24,35 @@ PaddleOCR, Ollama, and the OCR models.
 
 Download `Install-Thai-OCR-Web-Mac.zip` from the latest GitHub Release, extract
 it, then double click `Install-Thai-OCR-Web-Mac.command`. The Mac package is
-optimized for Apple Silicon and installs only Typhoon OCR Fast, Python, and
-Ollama. It uses the M-series GPU through Metal and does not install CUDA,
-PaddleOCR, or the larger Windows-only engines.
+optimized for Apple Silicon and installs PaddleOCR Thai CPU as the lightweight
+default. Typhoon OCR Fast is optional and can be downloaded later from the
+settings panel. CUDA and the larger Windows-only engines are not installed.
 
 Requirements:
 
 - Apple Silicon Mac (M1 or newer)
 - macOS 14 Sonoma or newer
-- 12 GB free disk space; 16 GB RAM recommended (8 GB works with fewer apps open)
+- 6 GB free disk space; 8 GB RAM or more
 - Internet connection during installation
 
 The application is installed in `~/Thai-OCR-Web`. Double click
 `Thai OCR Web.command` on the Desktop to open it again later.
-Open **ตั้งค่าโมเดลและพื้นที่** in the web app to check the Fast model size,
-update it, or remove it from disk. A removed model can be downloaded again at
-any time.
+Open **ตั้งค่าโมเดลและพื้นที่** in the web app to install, update, or remove
+PaddleOCR and Typhoon Fast. A removed model can be downloaded again at any
+time. The OCR dropdown only shows models that are currently installed.
 
-The Mac worker uses a 4K context, resizes document images to 1600 pixels, and
-unloads Fast after 30 seconds to reduce unified-memory pressure on M1 systems.
+PaddleOCR uses CPU on macOS and is much lighter than Typhoon Fast. It is suited
+to plain Thai/English text. Typhoon Fast keeps richer Markdown, tables, and form
+layout, but uses more unified memory. Its Mac worker uses a 4K context, resizes
+document images to 1600 pixels, and unloads the model after 30 seconds.
 
 ## OCR engines
 
-- **Typhoon OCR Fast** (default): official Ollama Q4 model, Thai/English,
+- **PaddleOCR Thai** (Mac default): small CPU models for fast plain Thai/English text.
+- **Typhoon OCR Fast**: official Ollama Q4 model, Thai/English,
   structured Markdown, tables and forms.
 - **Typhoon OCR normal**: BF16 model for better accuracy on names and numbers.
-- **PaddleOCR GPU**: fastest for plain Thai text.
+- **PaddleOCR GPU** (Windows): fastest for plain Thai text.
 - **Unlimited-OCR**: slower detailed document parser.
 
 Select 1, 5, or 10 pages per batch. Progress and results appear after each page.

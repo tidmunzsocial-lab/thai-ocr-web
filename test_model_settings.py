@@ -76,6 +76,23 @@ class ModelSettingsTest(unittest.TestCase):
             ):
                 self.assertEqual(web_app.available_engines(), [])
 
+    def test_mac_lists_installed_paddle_cpu_without_fast(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            det = root / "det"
+            rec = root / "rec"
+            det.mkdir()
+            rec.mkdir()
+            with (
+                patch.object(web_app.sys, "platform", "darwin"),
+                patch.object(web_app, "MODEL_PATH", root / "unlimited"),
+                patch.object(web_app, "TYPHOON_MODEL_PATH", root / "typhoon"),
+                patch.object(web_app, "PADDLE_MODEL_PATHS", [det, rec]),
+                patch.object(web_app, "_fast_model_info", return_value=None),
+            ):
+                self.assertEqual(web_app.available_engines(), ["PaddleOCR (CPU/เบา/เร็ว)"])
+                self.assertIn("PaddleOCR ไทย", web_app.installed_models_status())
+
 
 if __name__ == "__main__":
     unittest.main()

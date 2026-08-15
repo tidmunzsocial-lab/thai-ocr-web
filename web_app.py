@@ -121,6 +121,28 @@ def install_fast_model(progress=gr.Progress()) -> str:
         _set_model_admin_busy(False)
 
 
+def install_paddle_model(progress=gr.Progress()) -> str:
+    _set_model_admin_busy(True)
+    try:
+        if not PADDLE_PYTHON.exists():
+            raise gr.Error("ยังไม่ได้ติดตั้ง PaddleOCR กรุณารันตัวติดตั้งรุ่นล่าสุด")
+        progress(0, desc="กำลังดาวน์โหลด PaddleOCR ไทย")
+        result = subprocess.run(
+            [str(PADDLE_PYTHON), str(ROOT / "paddle_worker.py"), "--download"],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            check=False,
+            env={**os.environ, "PYTHONUTF8": "1", "DISABLE_MODEL_SOURCE_CHECK": "True"},
+        )
+        if result.returncode:
+            raise gr.Error("ติดตั้ง PaddleOCR ไม่สำเร็จ: " + (result.stderr or result.stdout)[-300:])
+        progress(1, desc="ติดตั้ง PaddleOCR เสร็จแล้ว")
+        return installed_models_status()
+    finally:
+        _set_model_admin_busy(False)
+
+
 def _folder_size(paths: list[Path]) -> int:
     return sum(file.stat().st_size for path in paths if path.exists() for file in path.rglob("*") if file.is_file())
 
@@ -144,14 +166,14 @@ def installed_models_status() -> str:
     return "\n".join(
         f"- 🟢 **{name}** — {_format_size(size)}" if size else f"- ⚪ **{name}** — ไม่ได้ติดตั้ง"
         for name, size in rows
-        if sys.platform != "darwin" or name == "Typhoon Fast (Ollama)"
+        if sys.platform != "darwin" or name in {"Typhoon Fast (Ollama)", "PaddleOCR ไทย"}
     )
 
 
 def available_engines() -> list[str]:
     engines = []
     if all(path.exists() for path in PADDLE_MODEL_PATHS):
-        engines.append("PaddleOCR (GPU/เร็ว)")
+        engines.append("PaddleOCR (CPU/เบา/เร็ว)" if sys.platform == "darwin" else "PaddleOCR (GPU/เร็ว)")
     if TYPHOON_MODEL_PATH.exists():
         engines.append("Typhoon OCR ปกติ (AI/ไทย)")
     try:
@@ -177,6 +199,10 @@ def refresh_models_and_engine(current_engine: str):
 
 def install_fast_and_refresh(current_engine: str, progress=gr.Progress()):
     return install_fast_model(progress), _engine_dropdown(current_engine)
+
+
+def install_paddle_and_refresh(current_engine: str, progress=gr.Progress()):
+    return install_paddle_model(progress), _engine_dropdown(current_engine)
 
 
 def remove_models_and_refresh(selected: list[str], confirmed: bool, current_engine: str):
@@ -743,8 +769,13 @@ def build_app() -> gr.Blocks:
                 )
                 if is_mac:
                     mode = gr.State("เร็ว (แนะนำ)")
-                    engine = gr.State("Typhoon OCR Fast (AI/ไทย/เร็ว)")
-                    gr.Markdown("**OCR:** Typhoon Fast (ประหยัดพื้นที่สำหรับ Mac)")
+                    engines = available_engines()
+                    paddle_engine = "PaddleOCR (CPU/เบา/เร็ว)"
+                    engine = gr.Dropdown(
+                        engines,
+                        value=paddle_engine if paddle_engine in engines else (engines[0] if engines else None),
+                        label="OCR ที่ต้องการใช้",
+                    )
                 else:
                     engines = available_engines()
                     preferred_engine = "Typhoon OCR Fast (AI/ไทย/เร็ว)"
@@ -777,7 +808,7 @@ def build_app() -> gr.Blocks:
                     gr.Markdown("**โมเดล OCR** — เลือกลบเฉพาะตัวที่ไม่ได้ใช้เพื่อคืนพื้นที่")
                     model_status = gr.Markdown("กดตรวจสอบเพื่อดูโมเดลและพื้นที่ที่ใช้อยู่")
                     removable_models = gr.CheckboxGroup(
-                        ["Typhoon Fast (Ollama)"] if is_mac else [
+                        ["Typhoon Fast (Ollama)", "PaddleOCR ไทย"] if is_mac else [
                             "Typhoon Fast (Ollama)", "Typhoon ปกติ", "Unlimited-OCR", "PaddleOCR ไทย"
                         ],
                         label="โมเดลที่ต้องการลบ",
@@ -786,6 +817,7 @@ def build_app() -> gr.Blocks:
                     with gr.Row():
                         check_model_button = gr.Button("ตรวจสอบโมเดล", size="sm")
                         install_model_button = gr.Button("ติดตั้ง / อัปเดต Fast", size="sm")
+                        install_paddle_button = gr.Button("ติดตั้ง / อัปเดต Paddle", size="sm")
                         remove_models_button = gr.Button("ลบโมเดลที่เลือก", variant="stop", size="sm")
                     gr.Markdown("**ไฟล์งานเก่า** — ลบรูปที่อัปโหลด ภาพแต่ละหน้า และไฟล์ผลลัพธ์ทั้งหมด")
                     clear_confirm = gr.Checkbox(label="ยืนยันว่าต้องการล้างไฟล์งานทั้งหมด", value=False)
@@ -804,28 +836,20 @@ def build_app() -> gr.Blocks:
         previous_button.click(lambda spec, total: move_selection(spec, total, -1), inputs=[page_spec, page_count], outputs=[page_spec, page_info])
         next_button.click(lambda spec, total: move_selection(spec, total, 1), inputs=[page_spec, page_count], outputs=[page_spec, page_info])
         all_button.click(select_all_pages, inputs=page_count, outputs=[page_spec, page_info])
-        if is_mac:
-            check_model_button.click(installed_models_status, outputs=model_status, queue=False, show_progress="hidden")
-            install_model_button.click(install_fast_model, outputs=model_status)
-            remove_models_button.click(
-                remove_selected_models,
-                inputs=[removable_models, confirm_model_removal],
-                outputs=[model_status, removable_models, confirm_model_removal],
-            )
-        else:
-            check_model_button.click(
-                refresh_models_and_engine,
-                inputs=engine,
-                outputs=[model_status, engine],
-                queue=False,
-                show_progress="hidden",
-            )
-            install_model_button.click(install_fast_and_refresh, inputs=engine, outputs=[model_status, engine])
-            remove_models_button.click(
-                remove_models_and_refresh,
-                inputs=[removable_models, confirm_model_removal, engine],
-                outputs=[model_status, removable_models, confirm_model_removal, engine],
-            )
+        check_model_button.click(
+            refresh_models_and_engine,
+            inputs=engine,
+            outputs=[model_status, engine],
+            queue=False,
+            show_progress="hidden",
+        )
+        install_model_button.click(install_fast_and_refresh, inputs=engine, outputs=[model_status, engine])
+        install_paddle_button.click(install_paddle_and_refresh, inputs=engine, outputs=[model_status, engine])
+        remove_models_button.click(
+            remove_models_and_refresh,
+            inputs=[removable_models, confirm_model_removal, engine],
+            outputs=[model_status, removable_models, confirm_model_removal, engine],
+        )
         clear_files_button.click(
             clear_saved_jobs,
             inputs=clear_confirm,
