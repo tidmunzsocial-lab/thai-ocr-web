@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-RELEASE_TAG="v1.1.1"
+RELEASE_TAG="v1.2.0"
 INSTALL_DIR="$HOME/Thai-OCR-Web"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/thai-ocr-web.XXXXXX")"
 trap 'rm -rf "$STAGE_DIR"' EXIT

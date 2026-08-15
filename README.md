@@ -41,17 +41,23 @@ Open **ตั้งค่าโมเดลและพื้นที่** in t
 update it, or remove it from disk. A removed model can be downloaded again at
 any time.
 
+The Mac worker uses a 4K context, resizes document images to 1600 pixels, and
+unloads Fast after 30 seconds to reduce unified-memory pressure on M1 systems.
+
 ## OCR engines
 
 - **Typhoon OCR Fast** (default): official Ollama Q4 model, Thai/English,
-  structured Markdown, tables and forms. It stays warm for two minutes between
-  Fast jobs and unloads when another engine is selected.
+  structured Markdown, tables and forms.
 - **Typhoon OCR normal**: BF16 model for better accuracy on names and numbers.
 - **PaddleOCR GPU**: fastest for plain Thai text.
 - **Unlimited-OCR**: slower detailed document parser.
 
 Select 1, 5, or 10 pages per batch. Progress and results appear after each page.
 Completed jobs are stored locally in `outputs/web/<job-id>/result.md`.
+The settings panel shows installed model sizes, removes selected unused models,
+and clears old job files after confirmation. The OCR dropdown only lists models
+that are currently installed. Use **เปิดโฟลเดอร์ไฟล์งาน** to open saved results
+on the host computer.
 
 ## Privacy
 

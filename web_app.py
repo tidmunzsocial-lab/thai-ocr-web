@@ -38,6 +38,10 @@ def find_ollama() -> Path:
 OLLAMA_EXE = find_ollama()
 PYTHON_EXE = Path(sys.executable)
 PADDLE_PYTHON = ROOT / ".venv-paddle" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+PADDLE_MODEL_PATHS = [
+    Path.home() / ".paddlex" / "official_models" / "PP-OCRv5_mobile_det",
+    Path.home() / ".paddlex" / "official_models" / "th_PP-OCRv5_mobile_rec",
+]
 
 _model = None
 _tokenizer = None
@@ -117,26 +121,138 @@ def install_fast_model(progress=gr.Progress()) -> str:
         _set_model_admin_busy(False)
 
 
-def remove_fast_model() -> str:
+def _folder_size(paths: list[Path]) -> int:
+    return sum(file.stat().st_size for path in paths if path.exists() for file in path.rglob("*") if file.is_file())
+
+
+def _format_size(size: int) -> str:
+    return f"{size / 1024**2:.0f} MB" if size < 1024**3 / 10 else f"{size / 1024**3:.1f} GB"
+
+
+def installed_models_status() -> str:
+    rows = []
+    try:
+        fast = _fast_model_info()
+        rows.append(("Typhoon Fast (Ollama)", fast.get("size", 0) if fast else 0))
+    except Exception:
+        rows.append(("Typhoon Fast (Ollama)", 0))
+    rows.extend([
+        ("Typhoon ปกติ", _folder_size([TYPHOON_MODEL_PATH])),
+        ("Unlimited-OCR", _folder_size([MODEL_PATH])),
+        ("PaddleOCR ไทย", _folder_size(PADDLE_MODEL_PATHS)),
+    ])
+    return "\n".join(
+        f"- 🟢 **{name}** — {_format_size(size)}" if size else f"- ⚪ **{name}** — ไม่ได้ติดตั้ง"
+        for name, size in rows
+        if sys.platform != "darwin" or name == "Typhoon Fast (Ollama)"
+    )
+
+
+def available_engines() -> list[str]:
+    engines = []
+    if all(path.exists() for path in PADDLE_MODEL_PATHS):
+        engines.append("PaddleOCR (GPU/เร็ว)")
+    if TYPHOON_MODEL_PATH.exists():
+        engines.append("Typhoon OCR ปกติ (AI/ไทย)")
+    try:
+        if _fast_model_info():
+            engines.append("Typhoon OCR Fast (AI/ไทย/เร็ว)")
+    except Exception:
+        pass
+    if MODEL_PATH.exists():
+        engines.append("Unlimited-OCR (AI/ละเอียด)")
+    return engines
+
+
+def _engine_dropdown(current: str | None):
+    choices = available_engines()
+    preferred = "Typhoon OCR Fast (AI/ไทย/เร็ว)"
+    value = current if current in choices else preferred if preferred in choices else (choices[0] if choices else None)
+    return gr.Dropdown(choices=choices, value=value)
+
+
+def refresh_models_and_engine(current_engine: str):
+    return installed_models_status(), _engine_dropdown(current_engine)
+
+
+def install_fast_and_refresh(current_engine: str, progress=gr.Progress()):
+    return install_fast_model(progress), _engine_dropdown(current_engine)
+
+
+def remove_models_and_refresh(selected: list[str], confirmed: bool, current_engine: str):
+    status, selected, confirmed = remove_selected_models(selected, confirmed)
+    return status, selected, confirmed, _engine_dropdown(current_engine)
+
+
+def remove_selected_models(selected: list[str], confirmed: bool):
+    if not selected:
+        raise gr.Error("กรุณาเลือกโมเดลที่ต้องการลบ")
+    if not confirmed:
+        raise gr.Error("กรุณาติ๊กยืนยันก่อนลบโมเดล")
     _set_model_admin_busy(True)
     try:
-        if not _fast_model_info():
-            return "🔴 ไม่มี Typhoon Fast อยู่ในเครื่อง"
-        from typhoon_fast_worker import MODEL
+        paths = {
+            "Typhoon ปกติ": [TYPHOON_MODEL_PATH],
+            "Unlimited-OCR": [MODEL_PATH],
+            "PaddleOCR ไทย": PADDLE_MODEL_PATHS,
+        }
+        removed = []
+        for name in selected:
+            if name == "Typhoon Fast (Ollama)":
+                from typhoon_fast_worker import MODEL, ensure_server
 
-        unload_fast_model()
-        result = subprocess.run(
-            [str(OLLAMA_EXE), "rm", MODEL],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        if result.returncode:
-            raise gr.Error("ลบโมเดลไม่สำเร็จ: " + (result.stderr or result.stdout)[-300:])
-        return "🔴 ลบ Typhoon Fast แล้ว • กดติดตั้งอีกครั้งได้ทุกเมื่อ"
+                ensure_server(OLLAMA_EXE)
+                unload_fast_model()
+                result = subprocess.run(
+                    [str(OLLAMA_EXE), "rm", MODEL], capture_output=True, text=True, timeout=120, check=False
+                )
+                if result.returncode and "not found" not in (result.stderr or result.stdout).lower():
+                    raise gr.Error("ลบ Typhoon Fast ไม่สำเร็จ: " + (result.stderr or result.stdout)[-300:])
+                removed.append(name)
+                continue
+            for path in paths.get(name, []):
+                if path.exists():
+                    shutil.rmtree(path)
+            if name in paths:
+                removed.append(name)
+        return f"✅ ลบแล้ว: {', '.join(removed)}\n\n" + installed_models_status(), [], False
     finally:
         _set_model_admin_busy(False)
+
+
+def open_output_folder() -> str:
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(OUTPUT_ROOT)])
+    elif os.name == "nt":
+        os.startfile(OUTPUT_ROOT)  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen(["xdg-open", str(OUTPUT_ROOT)])
+    return f"📂 เปิดโฟลเดอร์ไฟล์งานบนเครื่องนี้แล้ว: `{OUTPUT_ROOT}`"
+
+
+def clear_saved_jobs(confirmed: bool):
+    if not confirmed:
+        raise gr.Error("กรุณาติ๊กยืนยันก่อนล้างไฟล์งานทั้งหมด")
+    with _jobs_lock:
+        has_jobs = any(job["status"] in {"รอคิว", "กำลังทำ", "กำลังหยุด"} for job in _jobs.values())
+        if has_jobs or _model_admin_busy:
+            raise gr.Error("มีงานกำลังทำอยู่ กรุณารอให้เสร็จก่อน")
+
+    output_root = OUTPUT_ROOT.resolve()
+    if output_root != (ROOT / "outputs" / "web").resolve():
+        raise RuntimeError("ตำแหน่งโฟลเดอร์ผลงานไม่ถูกต้อง")
+    output_root.mkdir(parents=True, exist_ok=True)
+    removed = 0
+    for path in output_root.iterdir():
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        removed += 1
+    with _jobs_lock:
+        _jobs.clear()
+    return f"✅ ล้างไฟล์งานเก่าแล้ว {removed} รายการ", False, jobs_panel()
 
 
 def _update_job(job_id: str, **changes) -> None:
@@ -148,6 +264,8 @@ def _update_job(job_id: str, **changes) -> None:
 def register_job(file_path: str | None, engine: str, page_spec: str):
     if not file_path:
         raise gr.Error("กรุณาเลือกไฟล์รูปหรือ PDF ก่อน")
+    if not engine:
+        raise gr.Error("ยังไม่มีโมเดล OCR กรุณาติดตั้งโมเดลก่อน")
     job_id = uuid.uuid4().hex[:8]
     with _jobs_lock:
         if _model_admin_busy:
@@ -628,19 +746,16 @@ def build_app() -> gr.Blocks:
                     engine = gr.State("Typhoon OCR Fast (AI/ไทย/เร็ว)")
                     gr.Markdown("**OCR:** Typhoon Fast (ประหยัดพื้นที่สำหรับ Mac)")
                 else:
+                    engines = available_engines()
+                    preferred_engine = "Typhoon OCR Fast (AI/ไทย/เร็ว)"
                     mode = gr.Radio(
                         ["เร็ว (แนะนำ)", "ละเอียดสูง"],
                         value="เร็ว (แนะนำ)",
                         label="คุณภาพ",
                     )
                     engine = gr.Dropdown(
-                        [
-                            "PaddleOCR (GPU/เร็ว)",
-                            "Typhoon OCR ปกติ (AI/ไทย)",
-                            "Typhoon OCR Fast (AI/ไทย/เร็ว)",
-                            "Unlimited-OCR (AI/ละเอียด)",
-                        ],
-                        value="Typhoon OCR Fast (AI/ไทย/เร็ว)",
+                        engines,
+                        value=preferred_engine if preferred_engine in engines else (engines[0] if engines else None),
                         label="OCR ที่ต้องการใช้",
                     )
                 page_count = gr.State(1)
@@ -658,19 +773,31 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     run_button = gr.Button(queue_button_label(), variant="primary")
                     stop_button = gr.Button("หยุดงานปัจจุบัน", variant="stop")
-                if is_mac:
-                    with gr.Accordion("⚙️ ตั้งค่าโมเดลและพื้นที่", open=False):
-                        model_status = gr.Markdown("กดตรวจสอบเพื่อดูพื้นที่ที่โมเดลใช้อยู่")
-                        with gr.Row():
-                            check_model_button = gr.Button("ตรวจสอบ", size="sm")
-                            install_model_button = gr.Button("ติดตั้ง / อัปเดต Fast", size="sm")
-                            remove_model_button = gr.Button("ลบ Fast ออกจากเครื่อง", variant="stop", size="sm")
+                with gr.Accordion("⚙️ ตั้งค่าและพื้นที่จัดเก็บ", open=False):
+                    gr.Markdown("**โมเดล OCR** — เลือกลบเฉพาะตัวที่ไม่ได้ใช้เพื่อคืนพื้นที่")
+                    model_status = gr.Markdown("กดตรวจสอบเพื่อดูโมเดลและพื้นที่ที่ใช้อยู่")
+                    removable_models = gr.CheckboxGroup(
+                        ["Typhoon Fast (Ollama)"] if is_mac else [
+                            "Typhoon Fast (Ollama)", "Typhoon ปกติ", "Unlimited-OCR", "PaddleOCR ไทย"
+                        ],
+                        label="โมเดลที่ต้องการลบ",
+                    )
+                    confirm_model_removal = gr.Checkbox(label="ยืนยันว่าต้องการลบโมเดลที่เลือก", value=False)
+                    with gr.Row():
+                        check_model_button = gr.Button("ตรวจสอบโมเดล", size="sm")
+                        install_model_button = gr.Button("ติดตั้ง / อัปเดต Fast", size="sm")
+                        remove_models_button = gr.Button("ลบโมเดลที่เลือก", variant="stop", size="sm")
+                    gr.Markdown("**ไฟล์งานเก่า** — ลบรูปที่อัปโหลด ภาพแต่ละหน้า และไฟล์ผลลัพธ์ทั้งหมด")
+                    clear_confirm = gr.Checkbox(label="ยืนยันว่าต้องการล้างไฟล์งานทั้งหมด", value=False)
+                    clear_files_button = gr.Button("ล้างไฟล์งานทั้งหมด", variant="stop", size="sm")
+                    storage_status = gr.Markdown()
             with gr.Column():
                 status = gr.Markdown("พร้อมใช้งาน")
                 progress_display = gr.HTML(progress_bar(0, "พร้อมใช้งาน"))
                 result = gr.Markdown(label="ข้อความที่อ่านได้")
                 boxed = gr.Gallery(label="ภาพเอกสาร/กรอบข้อความ", columns=1)
                 download = gr.File(label="ดาวน์โหลดผลลัพธ์ (.md)")
+                open_folder_button = gr.Button("📂 เปิดโฟลเดอร์ไฟล์งาน", size="sm")
         job_id = gr.State("")
         document.change(page_setup, inputs=document, outputs=[page_spec, page_count, page_info, batch_size])
         batch_size.change(set_batch_size, inputs=[page_spec, page_count, batch_size], outputs=[page_spec, page_info])
@@ -678,9 +805,34 @@ def build_app() -> gr.Blocks:
         next_button.click(lambda spec, total: move_selection(spec, total, 1), inputs=[page_spec, page_count], outputs=[page_spec, page_info])
         all_button.click(select_all_pages, inputs=page_count, outputs=[page_spec, page_info])
         if is_mac:
-            check_model_button.click(fast_model_status, outputs=model_status, queue=False, show_progress="hidden")
+            check_model_button.click(installed_models_status, outputs=model_status, queue=False, show_progress="hidden")
             install_model_button.click(install_fast_model, outputs=model_status)
-            remove_model_button.click(remove_fast_model, outputs=model_status)
+            remove_models_button.click(
+                remove_selected_models,
+                inputs=[removable_models, confirm_model_removal],
+                outputs=[model_status, removable_models, confirm_model_removal],
+            )
+        else:
+            check_model_button.click(
+                refresh_models_and_engine,
+                inputs=engine,
+                outputs=[model_status, engine],
+                queue=False,
+                show_progress="hidden",
+            )
+            install_model_button.click(install_fast_and_refresh, inputs=engine, outputs=[model_status, engine])
+            remove_models_button.click(
+                remove_models_and_refresh,
+                inputs=[removable_models, confirm_model_removal, engine],
+                outputs=[model_status, removable_models, confirm_model_removal, engine],
+            )
+        clear_files_button.click(
+            clear_saved_jobs,
+            inputs=clear_confirm,
+            outputs=[storage_status, clear_confirm, jobs_display],
+            queue=False,
+        )
+        open_folder_button.click(open_output_folder, outputs=status, queue=False, show_progress="hidden")
         jobs_timer.tick(queue_ui_state, outputs=[jobs_display, run_button], queue=False, show_progress="hidden")
         stop_button.click(stop_current_job, outputs=jobs_display, queue=False, show_progress="hidden")
         submit = run_button.click(

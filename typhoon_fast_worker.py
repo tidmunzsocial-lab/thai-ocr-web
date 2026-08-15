@@ -3,15 +3,33 @@ import json
 import subprocess
 import sys
 import time
+from io import BytesIO
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+from PIL import Image
 
 from ocr_prompt import PROMPT
 
 
 MODEL = "scb10x/typhoon-ocr1.5-3b"
 API = "http://127.0.0.1:11434"
+
+
+def runtime_settings(platform: str = sys.platform) -> tuple[int, int | None, str]:
+    return (4096, 1600, "30s") if platform == "darwin" else (8192, None, "2m")
+
+
+def encode_image(path: Path, max_size: int | None) -> str:
+    if max_size is None:
+        return base64.b64encode(path.read_bytes()).decode()
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        image.save(output, format="PNG")
+    return base64.b64encode(output.getvalue()).decode()
 
 
 def request(path: str, data: dict | None = None, timeout: int = 600) -> dict:
@@ -45,14 +63,15 @@ def main() -> None:
     manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     ollama_exe = Path(sys.argv[2])
     ensure_server(ollama_exe)
+    num_ctx, max_image_size, keep_alive = runtime_settings()
     for item in manifest:
-        image = base64.b64encode(Path(item["image"]).read_bytes()).decode()
+        image = encode_image(Path(item["image"]), max_image_size)
         response = request("/api/chat", {
             "model": MODEL,
             "messages": [{"role": "user", "content": PROMPT, "images": [image]}],
             "stream": False,
-            "keep_alive": "2m",
-            "options": {"temperature": 0, "num_ctx": 8192},
+            "keep_alive": keep_alive,
+            "options": {"temperature": 0, "num_ctx": num_ctx},
         })
         print("@@RESULT@@" + json.dumps({
             "page": item["page"],
