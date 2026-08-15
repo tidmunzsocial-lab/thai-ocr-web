@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -14,14 +15,29 @@ from pathlib import Path
 
 import gradio as gr
 import fitz
-import torch
-from transformers import AutoModel, AutoTokenizer
 
 ROOT = Path(__file__).resolve().parent
 MODEL_PATH = ROOT / "models" / "Unlimited-OCR"
 TYPHOON_MODEL_PATH = ROOT / "models" / "Typhoon-OCR-1.5-2B"
-OLLAMA_EXE = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
 OUTPUT_ROOT = ROOT / "outputs" / "web"
+
+
+def find_ollama() -> Path:
+    configured = os.environ.get("OLLAMA_EXE")
+    candidates = [
+        Path(configured) if configured else None,
+        Path(shutil.which("ollama")) if shutil.which("ollama") else None,
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+        if os.name == "nt" else None,
+        Path.home() / "Applications" / "Ollama.app" / "Contents" / "Resources" / "ollama",
+        Path("/Applications/Ollama.app/Contents/Resources/ollama"),
+    ]
+    return next((path for path in candidates if path and path.is_file()), ROOT / "ollama-not-found")
+
+
+OLLAMA_EXE = find_ollama()
+PYTHON_EXE = Path(sys.executable)
+PADDLE_PYTHON = ROOT / ".venv-paddle" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 _model = None
 _tokenizer = None
@@ -37,7 +53,7 @@ def unload_fast_model() -> None:
     if OLLAMA_EXE.exists():
         subprocess.run(
             [str(OLLAMA_EXE), "stop", "scb10x/typhoon-ocr1.5-3b"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=30,
@@ -161,6 +177,9 @@ def queue_ui_state():
 
 def load_model():
     global _model, _tokenizer
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
     with _model_lock:
         if _model is None:
             if not torch.cuda.is_available():
@@ -181,11 +200,14 @@ def load_model():
 def unload_model() -> None:
     global _model, _tokenizer
     with _model_lock:
+        had_model = _model is not None
         _model = None
         _tokenizer = None
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if had_model:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def pdf_to_images(pdf_path: Path, output_dir: Path, dpi: int = 180) -> list[str]:
@@ -320,9 +342,9 @@ def _run_ocr_impl(
         manifest_file = job_dir / "typhoon_worker_manifest.json"
         manifest_file.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         worker_command = (
-            [str(ROOT / ".venv" / "Scripts" / "python.exe"), str(ROOT / "typhoon_fast_worker.py"), str(manifest_file), str(OLLAMA_EXE)]
+            [str(PYTHON_EXE), str(ROOT / "typhoon_fast_worker.py"), str(manifest_file), str(OLLAMA_EXE)]
             if is_fast else [
-                str(ROOT / ".venv" / "Scripts" / "python.exe"),
+                str(PYTHON_EXE),
                 str(ROOT / "typhoon_worker.py"),
                 str(manifest_file),
                 str(TYPHOON_MODEL_PATH),
@@ -379,7 +401,7 @@ def _run_ocr_impl(
         manifest_file = job_dir / "paddle_worker_manifest.json"
         manifest_file.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         process = subprocess.Popen(
-            [str(ROOT / ".venv-paddle" / "Scripts" / "python.exe"), str(ROOT / "paddle_worker.py"), str(manifest_file)],
+            [str(PADDLE_PYTHON), str(ROOT / "paddle_worker.py"), str(manifest_file)],
             cwd=ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -423,6 +445,7 @@ def _run_ocr_impl(
     unload_fast_model()
     _update_job(job_id, phase=f"กำลังโหลด {engine}")
     model, tokenizer = load_model()
+    import torch
     with _model_lock, torch.inference_mode():
         if is_pdf:
             page_results = []
@@ -505,6 +528,16 @@ def run_ocr(job_id: str, *args):
 
 
 def build_app() -> gr.Blocks:
+    engines = (
+        ["Typhoon OCR Fast (AI/ไทย/เร็ว)"]
+        if sys.platform == "darwin"
+        else [
+            "PaddleOCR (GPU/เร็ว)",
+            "Typhoon OCR ปกติ (AI/ไทย)",
+            "Typhoon OCR Fast (AI/ไทย/เร็ว)",
+            "Unlimited-OCR (AI/ละเอียด)",
+        ]
+    )
     with gr.Blocks(title="Unlimited OCR") as app:
         gr.Markdown(
             "# อ่านเอกสารจากรูปภาพหรือ PDF\n"
@@ -525,12 +558,7 @@ def build_app() -> gr.Blocks:
                     label="คุณภาพ",
                 )
                 engine = gr.Dropdown(
-                    [
-                        "PaddleOCR (GPU/เร็ว)",
-                        "Typhoon OCR ปกติ (AI/ไทย)",
-                        "Typhoon OCR Fast (AI/ไทย/เร็ว)",
-                        "Unlimited-OCR (AI/ละเอียด)",
-                    ],
+                    engines,
                     value="Typhoon OCR Fast (AI/ไทย/เร็ว)",
                     label="OCR ที่ต้องการใช้",
                 )

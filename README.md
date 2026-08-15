@@ -20,6 +20,24 @@ Requirements:
 The first installation is large because it downloads Python, CUDA libraries,
 PaddleOCR, Ollama, and the OCR models.
 
+## One-click Mac installation
+
+Download `Install-Thai-OCR-Web-Mac.zip` from the latest GitHub Release, extract
+it, then double click `Install-Thai-OCR-Web-Mac.command`. The Mac package is
+optimized for Apple Silicon and installs only Typhoon OCR Fast, Python, and
+Ollama. It uses the M-series GPU through Metal and does not install CUDA,
+PaddleOCR, or the larger Windows-only engines.
+
+Requirements:
+
+- Apple Silicon Mac (M1 or newer)
+- macOS 14 Sonoma or newer
+- 12 GB free disk space; 16 GB RAM recommended (8 GB works with fewer apps open)
+- Internet connection during installation
+
+The application is installed in `~/Thai-OCR-Web`. Double click
+`Thai OCR Web.command` on the Desktop to open it again later.
+
 ## OCR engines
 
 - **Typhoon OCR Fast** (default): official Ollama Q4 model, Thai/English,

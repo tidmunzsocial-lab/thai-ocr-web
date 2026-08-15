@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from typhoon_worker import PROMPT
+from ocr_prompt import PROMPT
 
 
 MODEL = "scb10x/typhoon-ocr1.5-3b"
@@ -28,7 +28,7 @@ def ensure_server(ollama_exe: Path) -> None:
     except (OSError, URLError):
         subprocess.Popen(
             [str(ollama_exe), "serve"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
