@@ -1,0 +1,12 @@
+.venv/
+.venv-paddle/
+models/
+outputs/
+work/
+__pycache__/
+*.py[cod]
+*.log
+*.pid
+*.pdf
+.cache/
+
